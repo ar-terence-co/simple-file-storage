@@ -16,7 +16,6 @@ module Plutus.Contracts.FileStorage.Utils
     ( getTypedDatum
     , getTypedDatumFromInfo
     , txOutHasNFT
-    , txOutTxHasOwnNFT
     , findInputWithNFT
     , findOutputWithNFT
     ) where
@@ -65,8 +64,3 @@ findOutputWithNFT nft info =
         _   -> Nothing
   where
     outs = [o | o <- txInfoOutputs info, txOutHasNFT nft o]
-
-txOutTxHasOwnNFT :: PlutusTx.IsData d => (d -> AssetClass) -> TxOutTx -> Bool
-txOutTxHasOwnNFT ownNFT ot = case getTypedDatum ot of
-    Nothing -> False 
-    Just d  -> txOutHasNFT (ownNFT d) $ txOutTxOut ot

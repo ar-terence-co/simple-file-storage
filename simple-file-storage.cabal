@@ -23,7 +23,7 @@ maintainer:         mrctrncco@gmail.com
 
 library
     exposed-modules:
-      MyModule
+      Plutus.Contracts.FileStorage
       Plutus.Contracts.FileStorage.File
       Plutus.Contracts.FileStorage.Request
       Plutus.Contracts.FileStorage.Shard
@@ -42,7 +42,8 @@ library
       plutus-tx,
       plutus-ledger,
       plutus-use-cases,
-      text
+      text,
+      utf8-string
     hs-source-dirs: src
     default-language: Haskell2010
     ghc-options:
@@ -73,18 +74,18 @@ library
 --     tasty-hunit -any,
 --     tasty-hedgehog >=0.2.0.0
 
--- executable simple-file-storage-pab
---   main-is: Main.hs
---   hs-source-dirs: pab
---   ghc-options:
---     -threaded
---   build-depends:
---     base >= 4.9 && < 5,
---     plutus-contract -any,
---     plutus-pab -any,
---     simple-file-storage,
---     aeson -any,
---     freer-simple -any,
---     prettyprinter -any,
---     freer-extras -any,
---     plutus-ledger -any
+executable simple-file-storage-pab
+  main-is: Main.hs
+  hs-source-dirs: pab
+  ghc-options:
+    -threaded
+  build-depends:
+    base >= 4.9 && < 5,
+    plutus-contract -any,
+    plutus-pab -any,
+    simple-file-storage,
+    aeson -any,
+    freer-simple -any,
+    prettyprinter -any,
+    freer-extras -any,
+    plutus-ledger -any
