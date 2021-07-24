@@ -47,7 +47,7 @@ import qualified Prelude                            as Haskell
 import           Schema                             (ToSchema)
 import           Text.Printf                        (printf)
 
-import           Plutus.Contracts.FileStorage.File  (fileAddress, fileTypedValidator)
+import           Plutus.Contracts.FileStorage.File  (fileAddress, fileTypedValidator, fileValidator)
 import           Plutus.Contracts.FileStorage.Types (FileBeginUploadArgs (..), FileDatum (..), FileRedeemer (..),
                                                      FileUploadShardArgs (..), ShardDatum (..))
 import           Plutus.Contracts.FileStorage.Utils (getTypedDatum, txOutHasNFT)
@@ -56,6 +56,20 @@ data CreateFileArgs
     = CreateFileArgs
         { crfFileName  :: String
         , crfShardSize :: Integer
+        }
+    deriving (Show, Generic, FromJSON, ToJSON, ToSchema)
+
+data RenameFileArgs
+    = RenameFileArgs
+        { rnfSymbol   :: ByteString
+        , rnfFileName :: String
+        }
+    deriving (Show, Generic, FromJSON, ToJSON, ToSchema)
+
+data SetAdminArgs
+    = SetAdminArgs
+        { saSymbol :: ByteString
+        , saAdmin  :: [ByteString]
         }
     deriving (Show, Generic, FromJSON, ToJSON, ToSchema)
 
@@ -105,10 +119,12 @@ closeFile sym = do
     (oref, ot, FileDatum{..}) <- findFile $ CurrencySymbol sym
     -- TODO: close shards as well
     pkh <- pubKeyHash <$> Contract.ownPubKey
+    when (pkh /= fOwner) $ throwError "only the owner can close a file"
     let fileName = BSU.toString fFileName
         v        = Value.assetClassValue fNFT 1
         redeemer = Redeemer $ PlutusTx.toData Close
         lookups  = Constraints.typedValidatorLookups fileTypedValidator <>
+                   Constraints.otherScript fileValidator                <>
                    Constraints.unspentOutputs (Map.singleton oref ot)   <>
                    Constraints.ownPubKeyHash pkh
         tx       = Constraints.mustSpendScriptOutput oref redeemer <>
@@ -142,9 +158,55 @@ cancelUpload = Haskell.undefined
 
 remove = Haskell.undefined
 
-rename = Haskell.undefined
+renameFile :: forall w s. RenameFileArgs -> Contract w s Text FileIdent
+renameFile RenameFileArgs{..} = do
+    (oref, ot, datum@FileDatum{..}) <- findFile $ CurrencySymbol rnfSymbol
+    pkh <- pubKeyHash <$> Contract.ownPubKey
+    when (bsFileName == emptyByteString) $ throwError "filename cannot be empty"
+    let oldFileName = BSU.toString fFileName 
+        d           = datum
+                          { fFileName      = bsFileName 
+                          , fLastUpdatedBy = pkh 
+                          }
+        v           = Value.assetClassValue fNFT 1
+        redeemer    = Redeemer $ PlutusTx.toData $ Rename bsFileName
+        lookups     = Constraints.typedValidatorLookups fileTypedValidator <>
+                      Constraints.otherScript fileValidator                <>
+                      Constraints.unspentOutputs (Map.singleton oref ot)   <>
+                      Constraints.ownPubKeyHash pkh
+        tx          = Constraints.mustSpendScriptOutput oref redeemer <>
+                      Constraints.mustPayToTheScript d v
+    ledgerTx <- Contract.submitTxConstraintsWith lookups tx
+    void $ Contract.awaitTxConfirmed $ txId ledgerTx
+    logInfo @String $ printf "renamed the file %s to %s for token %s" (show oldFileName) (show rnfFileName) (show fNFT)
+    pure $ FileIdent rnfFileName rnfSymbol
+  where
+    bsFileName = BSU.fromString rnfFileName
 
-setAdmin = Haskell.undefined
+setFileAdmin :: forall w s. SetAdminArgs -> Contract w s Text FileIdent
+setFileAdmin SetAdminArgs{..} = do
+    (oref, ot, datum@FileDatum{..}) <- findFile $ CurrencySymbol saSymbol
+    pkh <- pubKeyHash <$> Contract.ownPubKey
+    when (fOwner `notElem` newAdmin) $ throwError "the owner should be an admin"
+    let fileName = BSU.toString fFileName 
+        d        = datum
+                       { fAdmin         = newAdmin
+                       , fLastUpdatedBy = pkh
+                       }
+        v        = Value.assetClassValue fNFT 1
+        redeemer = Redeemer $ PlutusTx.toData $ SetAdmin newAdmin
+        lookups  = Constraints.typedValidatorLookups fileTypedValidator <>
+                   Constraints.otherScript fileValidator                <>
+                   Constraints.unspentOutputs (Map.singleton oref ot)   <>
+                   Constraints.ownPubKeyHash pkh
+        tx       = Constraints.mustSpendScriptOutput oref redeemer <>
+                   Constraints.mustPayToTheScript d v
+    ledgerTx <- Contract.submitTxConstraintsWith lookups tx
+    void $ Contract.awaitTxConfirmed $ txId ledgerTx
+    logInfo @String $ printf "updated admins for the file %s for token %s" (show fileName) (show fNFT)
+    pure $ FileIdent fileName saSymbol
+  where 
+    newAdmin = PubKeyHash <$> saAdmin
 
 findValidFiles :: forall w s. Contract w s Text [(TxOutRef, TxOutTx, FileDatum)]
 findValidFiles = do
@@ -162,7 +224,10 @@ findFile :: forall w s. CurrencySymbol -> Contract w s Text (TxOutRef, TxOutTx, 
 findFile sym = do
     utxos <- findFilesWhere hasValidNFT
     case utxos of
-        [(oref, ot, d)] -> pure (oref, ot, d)
+        [(oref, ot, d)] -> do
+            pkh <- pubKeyHash <$> Contract.ownPubKey
+            when (hasNoAccess pkh d) $ throwError "user has no access to this file"
+            pure (oref, ot, d)
         _               -> throwError "no valid file with that token"
   where
     nft = AssetClass (sym, fileTokenName)
@@ -170,16 +235,23 @@ findFile sym = do
     hasValidNFT :: FileDatum -> Bool
     hasValidNFT datum = fNFT datum == nft
 
+    hasNoAccess :: PubKeyHash -> FileDatum -> Bool
+    hasNoAccess pkh FileDatum{..} = pkh `notElem` fAdmin
+
 type FileStorageSchema
     =   Endpoint "create" CreateFileArgs
     .\/ Endpoint "close" ByteString
     .\/ Endpoint "check" ByteString
     .\/ Endpoint "list"  ()
+    .\/ Endpoint "rename" RenameFileArgs
+    .\/ Endpoint "set-admin" SetAdminArgs
 
 data FileStorageObservable
     = Created FileIdent | Closed  FileIdent
     | Checked FileDatum
     | Listed  [FileIdent]
+    | Renamed FileIdent
+    | AdminSet FileIdent
     | Loading String
     deriving (Show, Generic, FromJSON, ToJSON)
 
@@ -192,32 +264,46 @@ endpoints
     `select` close
     `select` check
     `select` list
+    `select` rename
+    `select` setAdmin
     >> endpoints
 
   where
     create :: FileStorageEndpoint Void ()
     create = handleErr $ do
         args <- endpoint @"create"
-        tell $ Last $ Just $ Right $ Loading "create"
+        tellLoading "create"
         Created <$> createFile args
 
     close :: FileStorageEndpoint Void ()
     close = handleErr $ do
         sym <- endpoint @"close"
-        tell $ Last $ Just $ Right $ Loading "close"
+        tellLoading "close"
         Closed <$> closeFile sym
 
     check :: FileStorageEndpoint Void ()
     check = handleErr $ do
         sym <- endpoint @"check"
-        tell $ Last $ Just $ Right $ Loading "check"
+        tellLoading "check"
         Checked <$> checkFile sym
 
     list :: FileStorageEndpoint Void ()
     list = handleErr $ do
         endpoint @"list"
-        tell $ Last $ Just $ Right $ Loading "list"
+        tellLoading "list"
         Listed <$> listFiles
+
+    rename :: FileStorageEndpoint Void ()
+    rename = handleErr $ do
+        args <- endpoint @"rename"
+        tellLoading "rename"
+        Renamed <$> renameFile args
+
+    setAdmin :: FileStorageEndpoint Void ()
+    setAdmin = handleErr $ do
+        args <- endpoint @"set-admin"
+        tellLoading "set-admin"
+        AdminSet <$> setFileAdmin args
 
     handleErr :: FileStorageEndpoint Text FileStorageObservable -> FileStorageEndpoint Void ()
     handleErr c = do
@@ -228,3 +314,5 @@ endpoints
                 logError err
             Right obs ->
                 tell $ Last $ Just $ Right obs
+
+    tellLoading = tell . Last . Just . Right . Loading

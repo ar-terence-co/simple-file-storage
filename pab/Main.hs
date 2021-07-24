@@ -36,6 +36,11 @@ main = void $ Simulator.runSimulationWith handlers $ do
     logString "Starting PAB webserver on port 8080. Press enter to exit."
     shutdown <- PAB.Server.startServerDebug
 
+    logString "Wallet PubKeyHashes"
+    forM_ wallets $ \w -> do
+        let pkh = pubKeyHash $ walletPubKey w
+        logString $ show w ++ ": " ++ show pkh
+
     void $ liftIO getLine
 
     logString "Balances at the end of the simulation"
@@ -46,6 +51,9 @@ main = void $ Simulator.runSimulationWith handlers $ do
   where
     logString = Simulator.logString @(Builtin PABContracts)
     logBalances = Simulator.logBalances @(Builtin PABContracts)
+
+wallets :: [Wallet]
+wallets = [Wallet i | i <- [1 .. 5]]
 
 data PABContracts = FileStorage
     deriving (Eq, Ord, Show, Generic)
