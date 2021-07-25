@@ -32,10 +32,12 @@ import           PlutusTx.Prelude hiding (Semigroup (..), check)
 import           Prelude          (Semigroup (..))
 import qualified Prelude          as Haskell
 
+import Plutus.Contracts.ScriptToken.Types (ScriptToken (..))
+
 data FileDatum
     = FileDatum
         { fOwner         :: !PubKeyHash
-        , fNFT           :: !AssetClass
+        , fScriptToken   :: !ScriptToken
         , fShardSize     :: !Integer
         , fFileName      :: !ByteString
         , fAdmin         :: ![PubKeyHash]
@@ -50,7 +52,7 @@ instance Eq FileDatum where
     {-# INLINABLE (==) #-}
     fd == fd' =
         fOwner         fd == fOwner         fd' &&
-        fNFT           fd == fNFT           fd' &&
+        fScriptToken   fd == fScriptToken   fd' &&
         fShardSize     fd == fShardSize     fd' &&
         fFileName      fd == fFileName      fd' &&
         fAdmin         fd == fAdmin         fd' &&

@@ -29,7 +29,7 @@ import           Prelude                            (Semigroup (..))
 import qualified Prelude                            as Haskell
 
 import           Plutus.Contracts.FileStorage.Types (FileDatum(..), ShardDatum(..))
-import           Plutus.Contracts.FileStorage.Utils (getTypedDatumFromInfo, findInputWithNFT, txOutHasNFT)
+import           Plutus.Contracts.Utils             (getTypedDatumFromInfo, findInputWithNFT, txOutHasNFT)
 
 
 {-# INLINABLE mkValidator #-}
@@ -83,7 +83,7 @@ mkValidator fNFT ShardDatum{..} _ ctx =
     nextShardIsSameScript :: Bool
     nextShardIsSameScript = case nextShInput of
         Nothing -> True
-        Just oref -> txOutAddress oref == txOutAddress ownInput
+        Just o -> txOutAddress o == txOutAddress ownInput
 
     nftBurned :: Bool
     nftBurned = 

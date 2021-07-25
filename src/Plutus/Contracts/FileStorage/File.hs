@@ -15,7 +15,7 @@
 module Plutus.Contracts.FileStorage.File 
     ( fileTypedValidator
     , fileValidator
-    , fileAddress
+    , fileValidatorHash
     ) where
 
 import           Control.Monad                      hiding (fmap)
@@ -30,7 +30,8 @@ import qualified Prelude                            as Haskell
 
 import           Plutus.Contracts.FileStorage.Types (FileDatum (..), FileRedeemer (..), ShardDatum (..),
                                                      FileBeginUploadArgs (..), FileUploadShardArgs (..))
-import           Plutus.Contracts.FileStorage.Utils (getTypedDatumFromInfo, txOutHasNFT,
+import           Plutus.Contracts.ScriptToken.Types (ScriptToken (..))
+import           Plutus.Contracts.Utils             (getTypedDatumFromInfo, txOutHasNFT,
                                                      findInputWithNFT, findOutputWithNFT)
 
 {-# INLINABLE txCommons #-}
@@ -69,7 +70,7 @@ validateCommon datum ctx =
     traceIfFalse "invalid output script datum"                       hasValidOutputDatum
   where
     (info, ownInput, ownOutput, ownOutputDatum) = txCommons ctx
-    nft = fNFT datum
+    nft = scriptTokenNFT $ fScriptToken datum
 
     ownInputHasNFT :: Bool
     ownInputHasNFT = txOutHasNFT nft ownInput
@@ -283,8 +284,10 @@ validateClose datum ctx =
     traceIfFalse "no continuing outputs on file close" noOwnOutputs      &&
     traceIfFalse "script nft must be burned"           nftBurned      
   where
-    (info, _, _, _) = txCommons ctx
-    nft = fNFT datum
+    nft = scriptTokenNFT $ fScriptToken datum
+
+    info :: TxInfo    
+    info = scriptContextTxInfo ctx
     
     hasOwnerSignatory :: Bool 
     hasOwnerSignatory = fOwner datum `elem` txInfoSignatories info
@@ -321,5 +324,5 @@ fileTypedValidator = Scripts.mkTypedValidator @Filing
 fileValidator :: Scripts.Validator 
 fileValidator = Scripts.validatorScript fileTypedValidator
 
-fileAddress :: Address 
-fileAddress = Ledger.scriptAddress fileValidator
+fileValidatorHash :: ValidatorHash 
+fileValidatorHash = Scripts.validatorHash fileTypedValidator

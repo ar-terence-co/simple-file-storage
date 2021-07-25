@@ -1,5 +1,5 @@
 module Plutus.Contracts.FileStorage
-    -- * Contracts
+    -- Contracts
     ( endpoints
     , checkFile
     , closeFile
@@ -9,15 +9,15 @@ module Plutus.Contracts.FileStorage
     , findFilesWhere
     , FileStorageSchema
     , FileStorageObservable
-    -- * File Script
-    , fileAddress
+    -- File Script
     , fileTypedValidator
     , fileValidator
+    , fileValidatorHash
     , FileDatum (..)
     , FileRedeemer (..)
     , FileBeginUploadArgs (..)
     , FileUploadShardArgs (..)
-    -- * Shard Script
+    -- Shard Script
     , shardAddress
     , shardTypedValidator
     , shardValidator

@@ -28,8 +28,11 @@ library
       Plutus.Contracts.FileStorage.Request
       Plutus.Contracts.FileStorage.Shard
       Plutus.Contracts.FileStorage.Types
+      Plutus.Contracts.ScriptToken
+      Plutus.Contracts.ScriptToken.Policy
+      Plutus.Contracts.ScriptToken.Types
     other-modules:
-      Plutus.Contracts.FileStorage.Utils
+      Plutus.Contracts.Utils
     build-depends:
       base >= 4.9 && < 5,
       aeson,

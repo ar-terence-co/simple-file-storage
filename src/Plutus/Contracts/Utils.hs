@@ -12,7 +12,7 @@
 {-# LANGUAGE TypeFamilies          #-}
 {-# LANGUAGE TypeOperators         #-}
 
-module Plutus.Contracts.FileStorage.Utils 
+module Plutus.Contracts.Utils 
     ( getTypedDatum
     , getTypedDatumFromInfo
     , txOutHasNFT

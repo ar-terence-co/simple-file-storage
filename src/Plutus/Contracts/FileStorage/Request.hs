@@ -47,10 +47,12 @@ import qualified Prelude                            as Haskell
 import           Schema                             (ToSchema)
 import           Text.Printf                        (printf)
 
-import           Plutus.Contracts.FileStorage.File  (fileAddress, fileTypedValidator, fileValidator)
+import           Plutus.Contracts.FileStorage.File  (fileTypedValidator, fileValidator, fileValidatorHash)
 import           Plutus.Contracts.FileStorage.Types (FileBeginUploadArgs (..), FileDatum (..), FileRedeemer (..),
                                                      FileUploadShardArgs (..), ShardDatum (..))
-import           Plutus.Contracts.FileStorage.Utils (getTypedDatum, txOutHasNFT)
+import           Plutus.Contracts.ScriptToken       (ScriptToken (..), ScriptTokenParams (..), scriptToken,
+                                                     scriptTokenPolicy, scriptTokenSymbol)
+import           Plutus.Contracts.Utils             (getTypedDatum, txOutHasNFT)
 
 data CreateFileArgs
     = CreateFileArgs
@@ -83,11 +85,11 @@ data FileIdent
 fileTokenName :: TokenName
 fileTokenName = "simple-file-storage"
 
-initialFileDatum :: PubKeyHash -> AssetClass -> ByteString -> Integer -> FileDatum
-initialFileDatum pkh nft fileName shardSize
+initialFileDatum :: PubKeyHash -> ScriptToken -> ByteString -> Integer -> FileDatum
+initialFileDatum pkh scrToken fileName shardSize
     = FileDatum
         { fOwner         = pkh
-        , fNFT           = nft
+        , fScriptToken   = scrToken
         , fShardSize     = shardSize
         , fFileName      = fileName
         , fAdmin         = [pkh]
@@ -97,17 +99,35 @@ initialFileDatum pkh nft fileName shardSize
         , fChecksum      = Nothing
         }
 
+fileNFT :: FileDatum -> AssetClass
+fileNFT = scriptTokenNFT . fScriptToken
+
 createFile :: forall w s. CreateFileArgs -> Contract w s Text FileIdent
 createFile CreateFileArgs{..} = do
     pkh <- pubKeyHash <$> Contract.ownPubKey
-    cs <- fmap Currency.currencySymbol $
-           Contract.mapError (pack . show @Currency.CurrencyError) $
-           Currency.mintContract pkh [(fileTokenName, 1)]
-    let nft = AssetClass (cs, fileTokenName)
-        d   = initialFileDatum pkh nft bsFileName crfShardSize
-        v   = Value.assetClassValue nft 1
-        tx  = Constraints.mustPayToTheScript d v
-    ledgerTx <- Contract.submitTxConstraints fileTypedValidator tx
+    utxos <- Contract.utxoAt $ pubKeyHashAddress pkh
+    oref <- case Map.toList utxos of
+        []             -> throwError "no valid utxo found for the wallet"
+        (oref', _) : _ -> pure oref'
+    let tokenParams =
+            ScriptTokenParams
+                { stpTxOutRef   = oref
+                , stpScriptHash = fileValidatorHash
+                , stpTokenName  = fileTokenName
+                }
+        scrToken = scriptToken tokenParams
+        nft@(AssetClass (cs, _)) = scriptTokenNFT scrToken
+        d        = initialFileDatum pkh scrToken bsFileName crfShardSize
+        v        = Value.assetClassValue nft 1
+        lookups  = Constraints.typedValidatorLookups fileTypedValidator      <>
+                   Constraints.otherScript fileValidator                     <>
+                   Constraints.mintingPolicy (scriptTokenPolicy tokenParams) <>
+                   Constraints.unspentOutputs utxos                          <>
+                   Constraints.ownPubKeyHash pkh
+        tx       = Constraints.mustPayToTheScript d v     <>
+                   Constraints.mustMintValue v            <>
+                   Constraints.mustSpendPubKeyOutput oref
+    ledgerTx <- Contract.submitTxConstraintsWith lookups tx
     void $ Contract.awaitTxConfirmed $ txId ledgerTx
     logInfo @String $ printf "created a file %s for token %s" (show crfFileName) (show nft)
     pure $ FileIdent crfFileName (unCurrencySymbol cs)
@@ -116,22 +136,31 @@ createFile CreateFileArgs{..} = do
 
 closeFile :: forall w s. ByteString -> Contract w s Text FileIdent
 closeFile sym = do
-    (oref, ot, FileDatum{..}) <- findFile $ CurrencySymbol sym
+    (oref, ot, datum@FileDatum{..}) <- findFile $ CurrencySymbol sym
     -- TODO: close shards as well
     pkh <- pubKeyHash <$> Contract.ownPubKey
     when (pkh /= fOwner) $ throwError "only the owner can close a file"
+    let nft@(AssetClass (_, tn)) = fileNFT datum
+        tokenParams =
+            ScriptTokenParams
+                { stpTxOutRef   = scriptTokenTxOutRef fScriptToken
+                , stpScriptHash = fileValidatorHash
+                , stpTokenName  = tn
+                }
+    when (scriptToken tokenParams /= fScriptToken) $ throwError "invalid script token, cannot burn nft"
     let fileName = BSU.toString fFileName
-        v        = Value.assetClassValue fNFT 1
+        v        = Value.assetClassValue nft 1
         redeemer = Redeemer $ PlutusTx.toData Close
-        lookups  = Constraints.typedValidatorLookups fileTypedValidator <>
-                   Constraints.otherScript fileValidator                <>
-                   Constraints.unspentOutputs (Map.singleton oref ot)   <>
+        lookups  = Constraints.typedValidatorLookups fileTypedValidator      <>
+                   Constraints.otherScript fileValidator                     <>
+                   Constraints.mintingPolicy (scriptTokenPolicy tokenParams) <>
+                   Constraints.unspentOutputs (Map.singleton oref ot)        <>
                    Constraints.ownPubKeyHash pkh
         tx       = Constraints.mustSpendScriptOutput oref redeemer <>
                    Constraints.mustMintValue (negate v)
     ledgerTx <- Contract.submitTxConstraintsWith lookups tx
     void $ Contract.awaitTxConfirmed $ txId ledgerTx
-    logInfo @String $ printf "closed the file %s for token %s" (show fileName) (show fNFT)
+    logInfo @String $ printf "closed the file %s for token %s" (show fileName) (show $ fileNFT datum)
     pure $ FileIdent fileName sym
 
 checkFile :: forall w s. ByteString -> Contract w s Text FileDatum
@@ -148,9 +177,9 @@ listFiles = do
     isAdmin pkh FileDatum{..} = pkh `elem` fAdmin
 
     getFileIdent :: (TxOutRef, TxOutTx, FileDatum) -> FileIdent
-    getFileIdent (_,_,FileDatum{..}) = FileIdent (BSU.toString fFileName) sym
+    getFileIdent (_,_,datum@FileDatum{..}) = FileIdent (BSU.toString fFileName) sym
       where
-        sym = unCurrencySymbol $ fst $ unAssetClass fNFT
+        sym = unCurrencySymbol $ fst $ unAssetClass $ fileNFT datum
 
 upload = Haskell.undefined
 
@@ -163,12 +192,12 @@ renameFile RenameFileArgs{..} = do
     (oref, ot, datum@FileDatum{..}) <- findFile $ CurrencySymbol rnfSymbol
     pkh <- pubKeyHash <$> Contract.ownPubKey
     when (bsFileName == emptyByteString) $ throwError "filename cannot be empty"
-    let oldFileName = BSU.toString fFileName 
+    let oldFileName = BSU.toString fFileName
         d           = datum
-                          { fFileName      = bsFileName 
-                          , fLastUpdatedBy = pkh 
+                          { fFileName      = bsFileName
+                          , fLastUpdatedBy = pkh
                           }
-        v           = Value.assetClassValue fNFT 1
+        v           = Value.assetClassValue (fileNFT datum) 1
         redeemer    = Redeemer $ PlutusTx.toData $ Rename bsFileName
         lookups     = Constraints.typedValidatorLookups fileTypedValidator <>
                       Constraints.otherScript fileValidator                <>
@@ -178,7 +207,7 @@ renameFile RenameFileArgs{..} = do
                       Constraints.mustPayToTheScript d v
     ledgerTx <- Contract.submitTxConstraintsWith lookups tx
     void $ Contract.awaitTxConfirmed $ txId ledgerTx
-    logInfo @String $ printf "renamed the file %s to %s for token %s" (show oldFileName) (show rnfFileName) (show fNFT)
+    logInfo @String $ printf "renamed the file %s to %s for token %s" (show oldFileName) (show rnfFileName) (show $ fileNFT datum)
     pure $ FileIdent rnfFileName rnfSymbol
   where
     bsFileName = BSU.fromString rnfFileName
@@ -188,12 +217,12 @@ setFileAdmin SetAdminArgs{..} = do
     (oref, ot, datum@FileDatum{..}) <- findFile $ CurrencySymbol saSymbol
     pkh <- pubKeyHash <$> Contract.ownPubKey
     when (fOwner `notElem` newAdmin) $ throwError "the owner should be an admin"
-    let fileName = BSU.toString fFileName 
+    let fileName = BSU.toString fFileName
         d        = datum
                        { fAdmin         = newAdmin
                        , fLastUpdatedBy = pkh
                        }
-        v        = Value.assetClassValue fNFT 1
+        v        = Value.assetClassValue (fileNFT datum) 1
         redeemer = Redeemer $ PlutusTx.toData $ SetAdmin newAdmin
         lookups  = Constraints.typedValidatorLookups fileTypedValidator <>
                    Constraints.otherScript fileValidator                <>
@@ -203,19 +232,19 @@ setFileAdmin SetAdminArgs{..} = do
                    Constraints.mustPayToTheScript d v
     ledgerTx <- Contract.submitTxConstraintsWith lookups tx
     void $ Contract.awaitTxConfirmed $ txId ledgerTx
-    logInfo @String $ printf "updated admins for the file %s for token %s" (show fileName) (show fNFT)
+    logInfo @String $ printf "updated admins for the file %s for token %s" (show fileName) (show $ fileNFT datum)
     pure $ FileIdent fileName saSymbol
-  where 
+  where
     newAdmin = PubKeyHash <$> saAdmin
 
 findValidFiles :: forall w s. Contract w s Text [(TxOutRef, TxOutTx, FileDatum)]
 findValidFiles = do
-    utxos <- Contract.utxoAt fileAddress
+    utxos <- Contract.utxoAt $ scriptHashAddress fileValidatorHash
     pure $ mapMaybe f $ Map.toList utxos
   where
     f (oref, ot) = case getTypedDatum ot of
-        Just d | txOutHasNFT (fNFT d) (txOutTxOut ot) -> Just (oref, ot, d)
-        _                                             -> Nothing
+        Just d | txOutHasNFT (fileNFT d) (txOutTxOut ot) -> Just (oref, ot, d)
+        _                                                -> Nothing
 
 findFilesWhere :: forall w s. (FileDatum -> Bool) -> Contract w s Text [(TxOutRef, TxOutTx, FileDatum)]
 findFilesWhere f = filter (\(_,_,d) -> f d) <$> findValidFiles
@@ -233,7 +262,7 @@ findFile sym = do
     nft = AssetClass (sym, fileTokenName)
 
     hasValidNFT :: FileDatum -> Bool
-    hasValidNFT datum = fNFT datum == nft
+    hasValidNFT datum = fileNFT datum == nft
 
     hasNoAccess :: PubKeyHash -> FileDatum -> Bool
     hasNoAccess pkh FileDatum{..} = pkh `notElem` fAdmin
